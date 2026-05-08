@@ -1,17 +1,23 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+import httpx
 import os
 import re
+import json
+from datetime import datetime
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from typing import List, Dict
+
+# Import logs router
+from app.logs import router as logs_router
 
 load_dotenv()
 
 app = FastAPI(
     title="Enterprise LLM Security Gateway",
-    description="Secure proxy with PII Redaction + Deanonymization",
-    version="0.3.0"
+    description="Secure proxy with PII Redaction + Deanonymization + Audit Logging",
+    version="0.4.0"
 )
 
 app.add_middleware(
@@ -21,6 +27,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include logs router
+app.include_router(logs_router)
+
+TARGET_LLM_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+# Log file
+LOG_FILE = "audit_logs.jsonl"
 
 class Message(BaseModel):
     role: str
@@ -40,7 +54,7 @@ async def root():
 async def health_check():
     return {"status": "healthy"}
 
-# ==================== REDACTION + DEANONYMIZATION ====================
+# ==================== PII REDACTION + MAPPING ====================
 def redact_pii_with_mapping(text: str) -> tuple[str, Dict[str, str]]:
     mapping = {}
     redacted_text = text
@@ -52,6 +66,7 @@ def redact_pii_with_mapping(text: str) -> tuple[str, Dict[str, str]]:
         r'\b\d{4}\s?\d{4}\s?\d{4}\b': '[REDACTED_AADHAAR]',
         r'\b[A-Z]{5}\d{4}[A-Z]\b': '[REDACTED_PAN]',
         r'\b[A-Z][a-z]+\s+[A-Z][a-z]+\b': '[REDACTED_NAME]',
+        r'\b(?:\d{1,3}\.){3}\d{1,3}\b': '[REDACTED_IP]',
     }
 
     for pattern, placeholder in patterns.items():
@@ -68,10 +83,20 @@ def deanonymize_response(text: str, mapping: Dict[str, str]) -> str:
         text = text.replace(placeholder, original)
     return text
 
+def log_request_response(log_data: dict):
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            json.dump(log_data, f, ensure_ascii=False)
+            f.write("\n")
+    except:
+        pass
+
 # ============================================================
 
 @app.post("/v1/chat/completions")
 async def proxy_llm(request: ChatRequest):
+    start_time = datetime.now()
+    
     try:
         if not request.messages:
             raise HTTPException(status_code=400, detail="No messages provided")
@@ -84,20 +109,46 @@ async def proxy_llm(request: ChatRequest):
         print(f"🔴 Original : {original_text[:250]}...")
         print(f"🟠 Redacted: {redacted_text[:250]}...")
 
-        # Simulate LLM Response
-        llm_reply = "I have reviewed your information. Your name is [REDACTED_NAME], Aadhaar number is [REDACTED_AADHAAR], PAN is [REDACTED_PAN], phone is [REDACTED_PHONE], and email is [REDACTED_EMAIL]. Everything looks good."
+        api_key = os.getenv('LLM_API_KEY')
 
-        # Deanonymize before sending back to user
-        final_response = deanonymize_response(llm_reply, mapping)
+        if not api_key or "your" in api_key.lower():
+            llm_response_text = "I have reviewed your information. Everything looks good."
+        else:
+            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(TARGET_LLM_URL, json=request.dict(), headers=headers, timeout=30.0)
+                llm_data = resp.json()
+                llm_response_text = llm_data.get("choices", [{}])[0].get("message", {}).get("content", "No response")
 
-        print(f"🟢 Final Response (Deanonymized): {final_response[:300]}...")
+        # Deanonymize
+        final_response_text = deanonymize_response(llm_response_text, mapping)
+
+        print(f"🟢 Final Response: {final_response_text[:300]}...")
+
+        # === AUDIT LOGGING ===
+        log_entry = {
+            "timestamp": start_time.isoformat(),
+            "original_prompt": original_text,
+            "redacted_prompt": redacted_text,
+            "llm_response": final_response_text,
+            "pii_detected": list(mapping.keys()),
+            "processing_time_seconds": round((datetime.now() - start_time).total_seconds(), 3),
+            "status": "success"
+        }
+        log_request_response(log_entry)
 
         return {
             "status": "success",
-            "redacted_prompt_used": redacted_text,
-            "llm_response": final_response,
-            "note": "Deanonymization applied successfully"
+            "response": final_response_text,
+            "pii_redacted_count": len(mapping),
+            "audit_id": str(start_time.timestamp())
         }
 
     except Exception as e:
+        error_log = {
+            "timestamp": datetime.now().isoformat(),
+            "error": str(e),
+            "status": "failed"
+        }
+        log_request_response(error_log)
         raise HTTPException(status_code=500, detail=str(e))
