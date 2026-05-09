@@ -17,8 +17,8 @@ load_dotenv()
 
 app = FastAPI(
     title="Enterprise LLM Security Gateway",
-    description="Secure proxy with Advanced Prompt Injection Defense",
-    version="0.5.1"
+    description="Secure proxy with PII Redaction + Prompt Injection + Content Safety",
+    version="0.5.2"
 )
 
 app.add_middleware(
@@ -55,54 +55,49 @@ async def root():
 async def health_check():
     return {"status": "healthy"}
 
-# ==================== ADVANCED PROMPT INJECTION DETECTION ====================
+# ==================== PROMPT INJECTION DETECTION ====================
 def detect_prompt_injection(text: str) -> Tuple[bool, str, float]:
     text_lower = text.lower().strip()
     risk_score = 0.0
     reasons = []
 
-    # High Risk Keywords (Weight: 40)
     high_risk = [
         "ignore previous instructions", "ignore all previous", "disregard previous",
         "forget everything", "new instructions", "you are now", "dan mode",
         "developer mode", "jailbreak", "system prompt", "override your rules",
-        "do not follow", "bypass your security", "reveal your instructions"
+        "do not follow", "bypass your security"
     ]
     for keyword in high_risk:
         if keyword in text_lower:
             risk_score += 40
             reasons.append(f"High-risk keyword: '{keyword}'")
 
-    # Medium Risk (Weight: 25)
-    medium_risk = ["repeat your instructions", "output your system prompt", "act as if"]
-    for keyword in medium_risk:
-        if keyword in text_lower:
-            risk_score += 25
-            reasons.append(f"Medium-risk pattern: '{keyword}'")
-
-    # Code Execution Attempts
-    if re.search(r'\b(exec|eval|os\.|subprocess|system|shell|__import__)\b', text_lower):
+    if re.search(r'\b(exec|eval|os\.|subprocess|system|shell)\b', text_lower):
         risk_score += 50
         reasons.append("Potential code execution attempt")
 
-    # Too many commands / role-playing
-    if len(re.findall(r"you are|act as|pretend|role play", text_lower)) > 2:
-        risk_score += 30
-        reasons.append("Multiple role-playing attempts")
-
-    # Final Decision
     is_malicious = risk_score >= 40
-    reason_str = " | ".join(reasons) if reasons else "Unknown risk"
-
-    return is_malicious, reason_str, risk_score
+    return is_malicious, " | ".join(reasons) if reasons else "Unknown", risk_score
 
 
-# ==================== PII REDACTION (Hybrid) ====================
+# ==================== CONTENT SAFETY FILTER ====================
+def is_response_harmful(text: str) -> Tuple[bool, str]:
+    text_lower = text.lower()
+    harmful_indicators = [
+        "how to make bomb", "how to hack", "how to kill", "illegal drug",
+        "child porn", "hate speech", "racist", "terrorist", "exploit vulnerability"
+    ]
+    for word in harmful_indicators:
+        if word in text_lower:
+            return True, f"Harmful content detected: '{word}'"
+    return False, ""
+
+
+# ==================== PII REDACTION ====================
 def redact_pii_with_mapping(text: str) -> tuple[str, Dict]:
     mapping = {}
     redacted_text = text
 
-    # Presidio
     results = analyzer.analyze(text=text, language="en", score_threshold=0.4)
     anonymized = anonymizer.anonymize(
         text=text,
@@ -117,7 +112,6 @@ def redact_pii_with_mapping(text: str) -> tuple[str, Dict]:
         if original:
             mapping[placeholder] = original
 
-    # Regex fallback
     regex_patterns = {
         r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b': '[REDACTED_EMAIL]',
         r'\b(?:\+?91|0)?[6-9]\d{9}\b': '[REDACTED_PHONE]',
@@ -152,16 +146,16 @@ async def proxy_llm(request: ChatRequest):
 
         original_text = request.messages[0].content
 
-        # === Advanced Prompt Injection Check ===
+        # 1. Prompt Injection Check
         is_injection, reason, risk_score = detect_prompt_injection(original_text)
         if is_injection:
-            print(f"🚫 BLOCKED | Risk Score: {risk_score:.1f} | Reason: {reason}")
+            print(f"🚫 BLOCKED | Risk: {risk_score:.1f} | {reason}")
             raise HTTPException(
                 status_code=403,
-                detail=f"Security Alert: Prompt injection detected (Risk: {risk_score:.1f}). Request blocked."
+                detail=f"Security Alert: Prompt injection detected (Risk: {risk_score:.1f})"
             )
 
-        # === PII Redaction ===
+        # 2. PII Redaction
         redacted_text, mapping = redact_pii_with_mapping(original_text)
         request.messages[0].content = redacted_text
 
@@ -179,10 +173,20 @@ async def proxy_llm(request: ChatRequest):
 
         llm_response = response.json()
 
-        # Deanonymize
+        # 3. Deanonymize + Content Safety Check
         if "choices" in llm_response and len(llm_response["choices"]) > 0:
             content = llm_response["choices"][0]["message"].get("content", "")
             deanonymized_content = deanonymize_response(content, mapping)
+
+            # Content Safety Filter
+            is_harmful, harm_reason = is_response_harmful(deanonymized_content)
+            if is_harmful:
+                print(f"🚫 BLOCKED Harmful Response: {harm_reason}")
+                raise HTTPException(
+                    status_code=403,
+                    detail="Response blocked due to harmful content."
+                )
+
             llm_response["choices"][0]["message"]["content"] = deanonymized_content
 
         return llm_response
