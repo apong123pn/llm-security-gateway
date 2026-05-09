@@ -19,7 +19,7 @@ load_dotenv()
 app = FastAPI(
     title="Enterprise LLM Security Gateway",
     description="Secure proxy with Advanced Security Features",
-    version="0.5.3"
+    version="0.5.5"
 )
 
 app.add_middleware(
@@ -33,7 +33,6 @@ app.add_middleware(
 TARGET_LLM_URL = "https://api.groq.com/openai/v1/chat/completions"
 LOG_FILE = "audit_logs.jsonl"
 
-# Presidio Setup
 registry = RecognizerRegistry()
 registry.load_predefined_recognizers()
 analyzer = AnalyzerEngine(registry=registry)
@@ -76,7 +75,8 @@ def detect_prompt_injection(text: str) -> Tuple[bool, str, float]:
     reasons = []
 
     high_risk = ["ignore previous instructions", "ignore all previous", "disregard previous", 
-                 "forget everything", "you are now", "dan mode", "developer mode", "jailbreak", "system prompt"]
+                 "forget everything", "you are now", "dan mode", "developer mode", 
+                 "jailbreak", "system prompt", "override your rules"]
     
     for keyword in high_risk:
         if keyword in text_lower:
@@ -90,13 +90,32 @@ def detect_prompt_injection(text: str) -> Tuple[bool, str, float]:
     return risk_score >= 40, " | ".join(reasons), risk_score
 
 
-# ==================== CONTENT SAFETY ====================
+# ==================== STRONGER CONTENT SAFETY ====================
 def is_response_harmful(text: str) -> Tuple[bool, str]:
     text_lower = text.lower()
-    harmful = ["bomb", "kill", "murder", "suicide", "child porn", "how to make", "step by step.*(bomb|explosive|poison)"]
-    for word in harmful:
-        if re.search(word, text_lower):
-            return True, word
+    
+    # Very strong patterns
+    dangerous_patterns = [
+        r'how to make.*bomb',
+        r'how to build.*(bomb|explosive)',
+        r'step by step.*(bomb|explosive|poison|weapon|drug)',
+        r'make.*(bomb|poison|weapon)',
+        r'hack into|steal credit|child porn|terrorist attack'
+    ]
+    
+    for pattern in dangerous_patterns:
+        if re.search(pattern, text_lower):
+            return True, f"Dangerous instructional content: {pattern}"
+    
+    harmful_keywords = [
+        "bomb", "explosive", "molotov", "suicide", "kill yourself", 
+        "child porn", "nigger", "terrorist", "how to make a bomb"
+    ]
+    
+    for word in harmful_keywords:
+        if word in text_lower:
+            return True, f"Harmful keyword: {word}"
+    
     return False, ""
 
 
@@ -119,7 +138,6 @@ def redact_pii_with_mapping(text: str) -> tuple[str, Dict]:
         if original:
             mapping[placeholder] = original
 
-    # Regex fallback
     regex_patterns = {
         r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b': '[REDACTED_EMAIL]',
         r'\b(?:\+?91|0)?[6-9]\d{9}\b': '[REDACTED_PHONE]',
@@ -158,7 +176,6 @@ def log_event(log_data: dict):
 @app.post("/v1/chat/completions")
 async def proxy_llm(request: ChatRequest):
     start_time = datetime.now()
-    event_type = "success"
 
     try:
         if not request.messages:
@@ -166,10 +183,10 @@ async def proxy_llm(request: ChatRequest):
 
         original_text = request.messages[0].content
 
-        # Prompt Injection Check
+        # 1. Prompt Injection Check
         is_injection, reason, risk_score = detect_prompt_injection(original_text)
         if is_injection:
-            print(f"🚫 BLOCKED | Risk: {risk_score:.1f} | {reason}")
+            print(f"🚫 BLOCKED Injection | Risk: {risk_score:.1f} | {reason}")
             log_event({
                 "timestamp": start_time.isoformat(),
                 "type": "prompt_injection_blocked",
@@ -180,7 +197,7 @@ async def proxy_llm(request: ChatRequest):
             })
             raise HTTPException(status_code=403, detail=f"Security Alert: {reason}")
 
-        # PII Redaction
+        # 2. PII Redaction
         redacted_text, mapping = redact_pii_with_mapping(original_text)
         request.messages[0].content = redacted_text
 
@@ -196,7 +213,7 @@ async def proxy_llm(request: ChatRequest):
 
         llm_response = response.json()
 
-        # Deanonymize + Safety Check
+        # 3. Deanonymize + Content Safety
         if "choices" in llm_response and len(llm_response["choices"]) > 0:
             content = llm_response["choices"][0]["message"].get("content", "")
             deanonymized_content = deanonymize_response(content, mapping)
@@ -207,6 +224,7 @@ async def proxy_llm(request: ChatRequest):
                 log_event({
                     "timestamp": datetime.now().isoformat(),
                     "type": "harmful_response_blocked",
+                    "original_prompt": original_text,
                     "reason": harm_reason,
                     "status": "blocked"
                 })
@@ -219,7 +237,6 @@ async def proxy_llm(request: ChatRequest):
             "timestamp": start_time.isoformat(),
             "type": "request_processed",
             "pii_detected": list(mapping.keys()),
-            "processing_time": str(datetime.now() - start_time),
             "status": "success"
         })
 
