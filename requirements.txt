@@ -6,3 +6,6 @@ pydantic
 slowapi
 presidio-analyzer
 presidio-anonymizer
+presidio-analyzer
+presidio-anonymizer
+slowapi
