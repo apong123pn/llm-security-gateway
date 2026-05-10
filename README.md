@@ -42,7 +42,7 @@ venv\Scripts\activate
 pip install -r requirements.txt
 
 # 3. Configure API Keys
-# Add these in .env file:
+# Add these in .env file: INTERNAL_API_KEY=dev-key-12345
 # LLM_API_KEY=your_groq_key
 # INTERNAL_API_KEY=dev-key-12345
 
