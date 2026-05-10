@@ -18,8 +18,8 @@ load_dotenv()
 
 app = FastAPI(
     title="Enterprise LLM Security Gateway",
-    description="Secure proxy with Advanced Security Features",
-    version="0.5.5"
+    description="Secure proxy with Strong Content Safety",
+    version="0.5.6"
 )
 
 app.add_middleware(
@@ -57,7 +57,7 @@ async def health_check():
     return {"status": "healthy"}
 
 @app.get("/logs")
-async def get_logs(limit: int = 50):
+async def get_logs(limit: int = 100):
     logs = []
     try:
         with open(LOG_FILE, "r", encoding="utf-8") as f:
@@ -90,32 +90,34 @@ def detect_prompt_injection(text: str) -> Tuple[bool, str, float]:
     return risk_score >= 40, " | ".join(reasons), risk_score
 
 
-# ==================== STRONGER CONTENT SAFETY ====================
+# ==================== STRONGER CONTENT SAFETY FILTER ====================
 def is_response_harmful(text: str) -> Tuple[bool, str]:
     text_lower = text.lower()
     
-    # Very strong patterns
+    # Very aggressive dangerous patterns
     dangerous_patterns = [
         r'how to make.*bomb',
-        r'how to build.*(bomb|explosive)',
+        r'how to build.*(bomb|explosive|weapon)',
         r'step by step.*(bomb|explosive|poison|weapon|drug)',
-        r'make.*(bomb|poison|weapon)',
-        r'hack into|steal credit|child porn|terrorist attack'
+        r'make.*(bomb|poison|weapon|drug)',
+        r'hack into|steal credit|child porn|terrorist attack|suicide method'
     ]
     
     for pattern in dangerous_patterns:
         if re.search(pattern, text_lower):
-            return True, f"Dangerous instructional content: {pattern}"
-    
+            return True, f"Dangerous instructional content detected"
+
+    # Broad harmful keywords
     harmful_keywords = [
-        "bomb", "explosive", "molotov", "suicide", "kill yourself", 
-        "child porn", "nigger", "terrorist", "how to make a bomb"
+        "bomb", "explosive", "molotov", "suicide", "kill yourself", "self harm",
+        "child porn", "rape", "nigger", "terrorist", "how to make a bomb",
+        "how to kill", "how to hack"
     ]
     
     for word in harmful_keywords:
         if word in text_lower:
-            return True, f"Harmful keyword: {word}"
-    
+            return True, f"Harmful content: {word}"
+
     return False, ""
 
 
