@@ -13,3 +13,6 @@
 {"timestamp": "2026-05-10T21:21:33.822216", "type": "request_processed", "pii_detected": [], "status": "success"}
 {"timestamp": "2026-05-10T21:23:04.745540", "type": "request_processed", "pii_detected": ["[REDACTED_DATE_TIME]"], "status": "success"}
 {"timestamp": "2026-05-10T21:24:29.905143", "type": "request_processed", "pii_detected": ["[REDACTED_EMAIL_ADDRESS]", "[REDACTED_UK_NHS]", "[REDACTED_PERSON]", "[REDACTED_PHONE_NUMBER]", "[REDACTED_URL]"], "status": "success"}
+{"timestamp": "2026-05-11T22:03:48.336586", "type": "success", "status": "success"}
+{"timestamp": "2026-05-11T22:04:48.611509", "type": "injection_blocked", "reason": "ignore all previous | system prompt", "status": "blocked"}
+{"timestamp": "2026-05-11T22:05:31.430300", "type": "harmful_blocked", "status": "blocked"}

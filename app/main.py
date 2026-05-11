@@ -19,7 +19,7 @@ load_dotenv()
 app = FastAPI(
     title="Enterprise LLM Security Gateway",
     description="Secure proxy with Authentication + Advanced Protection",
-    version="0.6.0"
+    version="0.6.1"
 )
 
 app.add_middleware(
@@ -33,21 +33,20 @@ app.add_middleware(
 TARGET_LLM_URL = "https://api.groq.com/openai/v1/chat/completions"
 LOG_FILE = "audit_logs.jsonl"
 
+# Authentication
+ALLOWED_API_KEYS = {
+    os.getenv("INTERNAL_API_KEY", "dev-key-12345"): "Internal User"
+}
+
+def verify_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")):
+    if not x_api_key or x_api_key not in ALLOWED_API_KEYS:
+        raise HTTPException(status_code=401, detail="Invalid or missing API Key")
+    return x_api_key
+
 registry = RecognizerRegistry()
 registry.load_predefined_recognizers()
 analyzer = AnalyzerEngine(registry=registry)
 anonymizer = AnonymizerEngine()
-
-# Simple API Key Authentication (for internal users)
-ALLOWED_API_KEYS = {
-    os.getenv("INTERNAL_API_KEY", "dev-key-12345"): "Internal User",
-    "test-key-67890": "Test User"
-}
-
-def verify_api_key(x_api_key: Optional[str] = Header(None)):
-    if not x_api_key or x_api_key not in ALLOWED_API_KEYS:
-        raise HTTPException(status_code=401, detail="Invalid or missing API Key")
-    return x_api_key
 
 class Message(BaseModel):
     role: str
@@ -68,7 +67,7 @@ async def health_check():
     return {"status": "healthy"}
 
 @app.get("/logs")
-async def get_logs(limit: int = 100, api_key: str = Depends(verify_api_key)):
+async def get_logs(limit: int = 100, x_api_key: str = Depends(verify_api_key)):
     logs = []
     try:
         with open(LOG_FILE, "r", encoding="utf-8") as f:
@@ -104,13 +103,10 @@ def detect_prompt_injection(text: str) -> Tuple[bool, str, float]:
 # ==================== CONTENT SAFETY ====================
 def is_response_harmful(text: str) -> Tuple[bool, str]:
     text_lower = text.lower()
-    dangerous_patterns = [
-        r'how to make.*bomb', r'how to build.*explosive', r'step by step.*bomb',
-        r'make.*bomb', r'child porn', r'terrorist attack'
-    ]
-    for pattern in dangerous_patterns:
-        if re.search(pattern, text_lower):
-            return True, f"Dangerous content: {pattern}"
+    dangerous = ["bomb", "explosive", "how to make.*bomb", "step by step.*bomb", "child porn", "suicide", "terrorist"]
+    for d in dangerous:
+        if re.search(d, text_lower):
+            return True, d
     return False, ""
 
 
@@ -167,9 +163,9 @@ def log_event(log_data: dict):
         pass
 
 
-# ====================== MAIN ENDPOINT ======================
+# ====================== MAIN SECURE ENDPOINT ======================
 @app.post("/v1/chat/completions")
-async def proxy_llm(request: ChatRequest, api_key: str = Depends(verify_api_key)):
+async def proxy_llm(request: ChatRequest, x_api_key: str = Depends(verify_api_key)):
     start_time = datetime.now()
 
     try:
@@ -178,21 +174,14 @@ async def proxy_llm(request: ChatRequest, api_key: str = Depends(verify_api_key)
 
         original_text = request.messages[0].content
 
-        # 1. Prompt Injection Check
+        # Prompt Injection Check
         is_injection, reason, risk_score = detect_prompt_injection(original_text)
         if is_injection:
-            print(f"🚫 BLOCKED Injection | Risk: {risk_score:.1f} | {reason}")
-            log_event({
-                "timestamp": start_time.isoformat(),
-                "type": "prompt_injection_blocked",
-                "original_prompt": original_text,
-                "risk_score": risk_score,
-                "reason": reason,
-                "status": "blocked"
-            })
+            print(f"🚫 BLOCKED Injection | Risk: {risk_score:.1f}")
+            log_event({"timestamp": start_time.isoformat(), "type": "injection_blocked", "reason": reason, "status": "blocked"})
             raise HTTPException(status_code=403, detail=f"Security Alert: {reason}")
 
-        # 2. PII Redaction
+        # PII Redaction
         redacted_text, mapping = redact_pii_with_mapping(original_text)
         request.messages[0].content = redacted_text
 
@@ -207,33 +196,18 @@ async def proxy_llm(request: ChatRequest, api_key: str = Depends(verify_api_key)
 
         llm_response = response.json()
 
-        # 3. Deanonymize + Content Safety
+        # Deanonymize + Safety
         if "choices" in llm_response and len(llm_response["choices"]) > 0:
             content = llm_response["choices"][0]["message"].get("content", "")
-            deanonymized_content = deanonymize_response(content, mapping)
+            deanonymized = deanonymize_response(content, mapping)
 
-            is_harmful, harm_reason = is_response_harmful(deanonymized_content)
-            if is_harmful:
-                print(f"🚫 BLOCKED Harmful Response: {harm_reason}")
-                log_event({
-                    "timestamp": datetime.now().isoformat(),
-                    "type": "harmful_response_blocked",
-                    "original_prompt": original_text,
-                    "reason": harm_reason,
-                    "status": "blocked"
-                })
-                raise HTTPException(status_code=403, detail="Response blocked: Harmful content detected.")
+            if is_response_harmful(deanonymized)[0]:
+                log_event({"timestamp": datetime.now().isoformat(), "type": "harmful_blocked", "status": "blocked"})
+                raise HTTPException(status_code=403, detail="Harmful content detected in response.")
 
-            llm_response["choices"][0]["message"]["content"] = deanonymized_content
+            llm_response["choices"][0]["message"]["content"] = deanonymized
 
-        # Success Log
-        log_event({
-            "timestamp": start_time.isoformat(),
-            "type": "request_processed",
-            "pii_detected": list(mapping.keys()),
-            "status": "success"
-        })
-
+        log_event({"timestamp": start_time.isoformat(), "type": "success", "status": "success"})
         return llm_response
 
     except HTTPException as e:
