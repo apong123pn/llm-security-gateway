@@ -14,7 +14,7 @@ load_dotenv()
 
 app = FastAPI(
     title="Enterprise LLM Security Gateway",
-    description="Production-ready with SOC Dashboard",
+    description="Production SOC Dashboard",
     version="0.7.0"
 )
 
@@ -29,10 +29,8 @@ app.add_middleware(
 TARGET_LLM_URL = "https://api.groq.com/openai/v1/chat/completions"
 LOG_FILE = "audit_logs.jsonl"
 
-# Simple RBAC
 ALLOWED_API_KEYS = {
-    os.getenv("INTERNAL_API_KEY", "dev-key-12345"): {"role": "admin", "name": "Admin User"},
-    "viewer-key-67890": {"role": "viewer", "name": "SOC Viewer"}
+    os.getenv("INTERNAL_API_KEY", "dev-key-12345"): {"role": "admin", "name": "Admin User"}
 }
 
 def verify_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")):
@@ -40,7 +38,7 @@ def verify_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")):
         raise HTTPException(status_code=401, detail="Invalid or missing API Key")
     return ALLOWED_API_KEYS[x_api_key]
 
-# Presidio Setup (kept light)
+# Presidio Setup (kept minimal)
 from presidio_analyzer import AnalyzerEngine, RecognizerRegistry
 from presidio_anonymizer import AnonymizerEngine
 from presidio_anonymizer.entities import OperatorConfig
@@ -68,56 +66,70 @@ async def root():
 async def health_check():
     return {"status": "healthy"}
 
-# ==================== BEAUTIFUL SOC DASHBOARD ====================
+# ==================== PROFESSIONAL SOC DASHBOARD ====================
 @app.get("/dashboard", response_class=HTMLResponse)
 async def soc_dashboard(user: dict = Depends(verify_api_key)):
     logs = []
     try:
         with open(LOG_FILE, "r", encoding="utf-8") as f:
-            for line in list(f)[-200:]:
+            for line in list(f)[-150:]:
                 if line.strip():
                     logs.append(json.loads(line))
     except:
         pass
 
     html = f"""
+    <!DOCTYPE html>
     <html>
-    <head><title>SOC Dashboard - LLM Security Gateway</title>
-    <style>
-        body {{ font-family: Arial, sans-serif; margin: 20px; background: #f4f4f4; }}
-        h1 {{ color: #1e3a8a; }}
-        table {{ width: 100%; border-collapse: collapse; background: white; }}
-        th, td {{ border: 1px solid #ddd; padding: 10px; text-align: left; }}
-        th {{ background-color: #1e3a8a; color: white; }}
-        .blocked {{ background-color: #fee2e2; }}
-        .success {{ background-color: #ecfdf5; }}
-    </style>
+    <head>
+        <title>SOC Dashboard - LLM Security Gateway</title>
+        <style>
+            body {{ font-family: 'Segoe UI', Arial, sans-serif; margin: 0; background: #f8fafc; }}
+            .header {{ background: linear-gradient(135deg, #1e40af, #3b82f6); color: white; padding: 20px; }}
+            .container {{ padding: 20px; max-width: 1400px; margin: auto; }}
+            table {{ width: 100%; border-collapse: collapse; background: white; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+            th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #e2e8f0; }}
+            th {{ background: #1e40af; color: white; }}
+            .blocked {{ background-color: #fee2e2; }}
+            .success {{ background-color: #ecfdf5; }}
+            .status {{ padding: 5px 12px; border-radius: 20px; font-size: 0.85em; }}
+        </style>
     </head>
     <body>
-        <h1>🔐 Enterprise LLM Security Gateway - SOC Dashboard</h1>
-        <p><strong>Welcome, {user['name']} ({user['role']})</strong></p>
-        <p>Total Logs: {len(logs)}</p>
-        <table>
-            <tr>
-                <th>Time</th>
-                <th>Event</th>
-                <th>Status</th>
-                <th>Details</th>
-            </tr>
+        <div class="header">
+            <h1>🔐 Enterprise LLM Security Gateway</h1>
+            <p>Welcome, <strong>{user['name']}</strong> | Role: <strong>{user['role'].upper()}</strong></p>
+        </div>
+        <div class="container">
+            <h2>Recent Activity & Security Events</h2>
+            <p><strong>Total Events:</strong> {len(logs)}</p>
+            <table>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Event Type</th>
+                    <th>Status</th>
+                    <th>Details</th>
+                </tr>
     """
     for log in reversed(logs):
         status_class = "blocked" if log.get("status") in ["blocked", "error"] else "success"
+        status_text = log.get("status", "success").upper()
         html += f"""
-            <tr class="{status_class}">
-                <td>{log.get('timestamp', '')[:19]}</td>
-                <td>{log.get('event_type', log.get('type', 'request'))}</td>
-                <td>{log.get('status', 'success')}</td>
-                <td>{log.get('reason', log.get('pii_detected', ''))}</td>
-            </tr>
+                <tr class="{status_class}">
+                    <td>{log.get('timestamp', '')[:19]}</td>
+                    <td>{log.get('event_type', log.get('type', 'request'))}</td>
+                    <td><span class="status">{status_text}</span></td>
+                    <td>{log.get('reason', '') or log.get('pii_detected', '')}</td>
+                </tr>
         """
-    html += "</table></body></html>"
+    html += """
+            </table>
+        </div>
+    </body>
+    </html>
+    """
     return HTMLResponse(html)
 
-# ... (rest of the code remains same as previous version)
+# Rest of the code (endpoints, PII, etc.) remains the same as previous version
 
-print("✅ SOC Dashboard ready at /dashboard")
+print("✅ Professional SOC Dashboard is ready at /dashboard")
