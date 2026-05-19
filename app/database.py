@@ -1,5 +1,5 @@
-# app/database.py - Full Updated Version with PII + Threat Detection Support
-from sqlalchemy import Column, Integer, String, DateTime, Text, JSON, Boolean, Float, Index
+# app/database.py - PostgreSQL Version
+from sqlalchemy import Column, Integer, String, DateTime, Text, JSON, Boolean, Float, Index, create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy import select, func
@@ -12,7 +12,7 @@ import os
 Base = declarative_base()
 
 class LLMRequestLog(Base):
-    """Audit log table for compliance (GDPR/HIPAA/SOC2) with PII and threat tracking"""
+    """Audit log table for compliance (GDPR/HIPAA/SOC2)"""
     __tablename__ = "llm_requests"
     
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -30,31 +30,30 @@ class LLMRequestLog(Base):
     temperature = Column(Float)
     max_tokens = Column(Integer)
     
-    # Content (original and redacted)
+    # Content
     original_prompt = Column(Text)
     redacted_prompt = Column(Text)
     original_response = Column(Text)
     redacted_response = Column(Text)
     
-    # PII Detection (Microsoft Presidio)
+    # PII Detection
     pii_detected = Column(Boolean, default=False, index=True)
-    pii_types = Column(JSON)  # Stores list of PII types found (e.g., ["EMAIL", "PHONE"])
-    pii_count = Column(Integer, default=0)  # Number of PII instances found
+    pii_types = Column(JSON)
+    pii_count = Column(Integer, default=0)
     
-    # Threat Detection (Rebuff + Heuristics)
+    # Threat Detection
     prompt_injection_detected = Column(Boolean, default=False, index=True)
     injection_confidence = Column(Float, default=0.0)
-    injection_attack_type = Column(String(500))  # Comma-separated attack types
+    injection_attack_type = Column(String(500))
     
     # Actions
     blocked = Column(Boolean, default=False, index=True)
     block_reason = Column(String(500))
     
-    # Metadata for audit
+    # Metadata
     client_ip = Column(String(45))
     user_agent = Column(String(500))
     
-    # Indexes for fast queries
     __table_args__ = (
         Index('ix_timestamp_user', 'timestamp', 'user_id'),
         Index('ix_blocked_timestamp', 'blocked', 'timestamp'),
@@ -64,33 +63,24 @@ class LLMRequestLog(Base):
 
 
 class DatabaseService:
-    """Database service for persistent audit logging with PII and threat tracking"""
+    """PostgreSQL database service"""
     
     def __init__(self, database_url: str = None):
         if database_url is None:
-            database_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./audit_logs.db")
+            database_url = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:SSnipey9863@localhost:5432/llm_gateway")
         
         self.database_url = database_url
         self.engine = None
         self.async_session = None
-        self._using_sqlite = "sqlite" in database_url
     
     async def init_db(self):
-        """Create all tables and initialize connections"""
-        if self._using_sqlite:
-            connect_args = {"check_same_thread": False}
-            self.engine = create_async_engine(
-                self.database_url, 
-                echo=False, 
-                connect_args=connect_args
-            )
-        else:
-            self.engine = create_async_engine(
-                self.database_url, 
-                echo=False, 
-                pool_size=5, 
-                max_overflow=10
-            )
+        """Create all tables"""
+        self.engine = create_async_engine(
+            self.database_url,
+            echo=False,
+            pool_size=10,
+            max_overflow=20
+        )
         
         self.async_session = async_sessionmaker(
             self.engine, 
@@ -98,47 +88,20 @@ class DatabaseService:
             expire_on_commit=False
         )
         
-        # Create tables
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         
-        db_type = "SQLite" if self._using_sqlite else "PostgreSQL"
-        print(f"✅ Database connected: {self.database_url}")
+        print(f"✅ PostgreSQL connected: {self.database_url[:50]}...")
         return self
     
     async def close_db(self):
         """Close database connection"""
         if self.engine:
             await self.engine.dispose()
-            print("✅ Database connection closed")
+            print("✅ PostgreSQL connection closed")
     
     async def log_request(self, data: Dict[str, Any]) -> str:
-        """
-        Log LLM request to database with PII and threat information.
-        
-        Expected data fields:
-        - user_id: str
-        - department: str (optional)
-        - provider: str
-        - model: str
-        - temperature: float (optional)
-        - max_tokens: int (optional)
-        - original_prompt: str
-        - redacted_prompt: str (optional)
-        - original_response: str
-        - redacted_response: str (optional)
-        - pii_detected: bool
-        - pii_types: list (e.g., ["EMAIL", "PHONE"])
-        - pii_count: int
-        - prompt_injection_detected: bool
-        - injection_confidence: float
-        - injection_attack_type: str
-        - blocked: bool
-        - block_reason: str (optional)
-        - client_ip: str (optional)
-        - user_agent: str (optional)
-        - response_time_ms: int
-        """
+        """Log LLM request to PostgreSQL"""
         request_id = str(uuid.uuid4())
         
         async with self.async_session() as session:
@@ -171,30 +134,15 @@ class DatabaseService:
             return request_id
     
     async def get_stats(self) -> Dict:
-        """Get statistics from database including PII and threat metrics"""
+        """Get statistics from database"""
         async with self.async_session() as session:
-            # Total requests
             total = await session.scalar(select(func.count()).select_from(LLMRequestLog))
+            blocked = await session.scalar(select(func.count()).where(LLMRequestLog.blocked == True))
+            pii_count = await session.scalar(select(func.count()).where(LLMRequestLog.pii_detected == True))
+            injection_count = await session.scalar(select(func.count()).where(LLMRequestLog.prompt_injection_detected == True))
             
-            # Blocked requests
-            blocked = await session.scalar(
-                select(func.count()).where(LLMRequestLog.blocked == True)
-            )
-            
-            # PII detections
-            pii_count = await session.scalar(
-                select(func.count()).where(LLMRequestLog.pii_detected == True)
-            )
-            
-            # Injection detections
-            injection_count = await session.scalar(
-                select(func.count()).where(LLMRequestLog.prompt_injection_detected == True)
-            )
-            
-            # Get top PII types detected
-            all_logs = await session.execute(
-                select(LLMRequestLog.pii_types).where(LLMRequestLog.pii_detected == True)
-            )
+            # Get top PII types
+            all_logs = await session.execute(select(LLMRequestLog.pii_types).where(LLMRequestLog.pii_detected == True))
             pii_type_counts = {}
             for row in all_logs:
                 if row[0]:
@@ -204,10 +152,8 @@ class DatabaseService:
             
             top_pii_types = sorted(pii_type_counts.items(), key=lambda x: x[1], reverse=True)[:5]
             
-            # Get top injection attack types
-            injection_logs = await session.execute(
-                select(LLMRequestLog.injection_attack_type).where(LLMRequestLog.prompt_injection_detected == True)
-            )
+            # Get top attack types
+            injection_logs = await session.execute(select(LLMRequestLog.injection_attack_type).where(LLMRequestLog.prompt_injection_detected == True))
             attack_type_counts = {}
             for row in injection_logs:
                 if row[0]:
@@ -227,17 +173,15 @@ class DatabaseService:
                 "injection_rate": round((injection_count or 0) / (total or 1) * 100, 2),
                 "top_pii_types": dict(top_pii_types),
                 "top_attack_types": dict(top_attack_types),
-                "database_type": "SQLite" if self._using_sqlite else "PostgreSQL"
+                "database_type": "PostgreSQL"
             }
     
     async def get_logs(self, limit: int = 20, user_id: Optional[str] = None) -> list:
-        """Get recent audit logs with PII and threat information"""
+        """Get recent audit logs"""
         async with self.async_session() as session:
             query = select(LLMRequestLog).order_by(LLMRequestLog.timestamp.desc())
-            
             if user_id:
                 query = query.where(LLMRequestLog.user_id == user_id)
-            
             query = query.limit(limit)
             result = await session.execute(query)
             logs = result.scalars().all()
@@ -250,26 +194,18 @@ class DatabaseService:
                     "department": log.department,
                     "model": log.model,
                     "blocked": log.blocked,
-                    "block_reason": log.block_reason,
                     "pii_detected": log.pii_detected,
                     "pii_types": json.loads(log.pii_types) if log.pii_types else [],
-                    "pii_count": log.pii_count,
                     "prompt_injection_detected": log.prompt_injection_detected,
-                    "injection_confidence": log.injection_confidence,
-                    "injection_attack_type": log.injection_attack_type,
                     "response_time_ms": log.response_time_ms
                 }
                 for log in logs
             ]
     
     async def get_threat_report(self, limit: int = 50) -> Dict:
-        """Get detailed threat detection report for security team"""
+        """Get threat detection report"""
         async with self.async_session() as session:
-            # Get logs with injection detected
-            query = select(LLMRequestLog).where(
-                LLMRequestLog.prompt_injection_detected == True
-            ).order_by(LLMRequestLog.timestamp.desc()).limit(limit)
-            
+            query = select(LLMRequestLog).where(LLMRequestLog.prompt_injection_detected == True).order_by(LLMRequestLog.timestamp.desc()).limit(limit)
             result = await session.execute(query)
             logs = result.scalars().all()
             
@@ -281,21 +217,16 @@ class DatabaseService:
                         "user_id": log.user_id,
                         "attack_types": log.injection_attack_type.split(", ") if log.injection_attack_type else [],
                         "confidence": log.injection_confidence,
-                        "blocked": log.blocked,
-                        "prompt_preview": log.original_prompt[:200] if log.original_prompt else ""
+                        "blocked": log.blocked
                     }
                     for log in logs[:20]
                 ]
             }
     
     async def get_pii_report(self, limit: int = 50) -> Dict:
-        """Get detailed PII detection report for compliance"""
+        """Get PII detection report"""
         async with self.async_session() as session:
-            # Get logs with PII detected
-            query = select(LLMRequestLog).where(
-                LLMRequestLog.pii_detected == True
-            ).order_by(LLMRequestLog.timestamp.desc()).limit(limit)
-            
+            query = select(LLMRequestLog).where(LLMRequestLog.pii_detected == True).order_by(LLMRequestLog.timestamp.desc()).limit(limit)
             result = await session.execute(query)
             logs = result.scalars().all()
             
@@ -306,8 +237,7 @@ class DatabaseService:
                         "timestamp": log.timestamp.isoformat(),
                         "user_id": log.user_id,
                         "pii_types": json.loads(log.pii_types) if log.pii_types else [],
-                        "pii_count": log.pii_count,
-                        "prompt_preview": log.original_prompt[:200] if log.original_prompt else ""
+                        "pii_count": log.pii_count
                     }
                     for log in logs[:20]
                 ]
