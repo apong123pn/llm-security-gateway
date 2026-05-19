@@ -1,16 +1,57 @@
-from fastapi import FastAPI, Request
+# gateway.py - WORKING VERSION WITH REQUEST BODY
+from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Optional
+from contextlib import asynccontextmanager
+from dotenv import load_dotenv
 import time
 import uuid
+import os
 
-# Create FastAPI app
+load_dotenv()
+from app.database import DatabaseService
+
+# ============================================================
+# PYDANTIC MODELS
+# ============================================================
+
+class Message(BaseModel):
+    role: str
+    content: str
+
+class ChatRequest(BaseModel):
+    model: str = "gpt-3.5-turbo"
+    messages: List[Message]
+    temperature: float = 0.7
+    max_tokens: int = 500
+
+# ============================================================
+# DATABASE
+# ============================================================
+
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./audit_logs.db")
+db_service = DatabaseService(DATABASE_URL)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("\n🚀 Starting LLM Security Gateway...")
+    await db_service.init_db()
+    print("✅ Database ready")
+    yield
+    await db_service.close_db()
+
+# ============================================================
+# APP
+# ============================================================
+
 app = FastAPI(
     title="LLM Security Gateway",
     description="Enterprise LLM Security Gateway",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,26 +60,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Simple in-memory log storage (temporary, until PostgreSQL is ready)
-audit_logs = []
-
-# API Keys for testing
-USERS = {
-    "admin-key-12345": {"role": "admin", "name": "Admin User", "department": "it"},
-    "test-key-67890": {"role": "user", "name": "Test User", "department": "engineering"},
+# Simple API key storage
+API_KEYS = {
+    "admin-key-12345": "Admin User",
+    "test-key-67890": "Test User",
 }
 
-def verify_api_key(x_api_key: str):
-    """Simple API key verification"""
-    return USERS.get(x_api_key)
+# ============================================================
+# SIMPLE ENDPOINTS (No complex auth)
+# ============================================================
 
 @app.get("/")
 async def root():
-    return {
-        "message": "LLM Security Gateway is running!",
-        "status": "healthy",
-        "version": "1.0.0"
-    }
+    return {"message": "LLM Security Gateway Running", "docs": "/docs"}
 
 @app.get("/health")
 async def health():
@@ -46,106 +80,107 @@ async def health():
 
 @app.get("/stats")
 async def get_stats():
-    """Get gateway statistics"""
-    total = len(audit_logs)
-    blocked = len([l for l in audit_logs if l.get("blocked")])
-    return {
-        "total_requests": total,
-        "blocked_requests": blocked,
-        "uptime": "running"
-    }
+    return await db_service.get_stats()
 
-@app.post("/v1/chat/completions")
-async def proxy_to_openai(request: Request, x_api_key: str = None):
-    """Main proxy endpoint with audit logging"""
+# ============================================================
+# CHAT ENDPOINT - Using path parameter for API key (temporary)
+# This WILL show the request body in Swagger
+# ============================================================
+
+@app.post("/v1/chat/completions/{api_key}")
+async def chat_completion(
+    api_key: str,
+    request: ChatRequest,
+    background_tasks: BackgroundTasks,
+    raw_request: Request
+):
+    """
+    Send a chat completion request.
     
-    start_time = time.time()
-    request_id = str(uuid.uuid4())
+    Replace {api_key} with your API key:
+    - admin-key-12345
+    - test-key-67890
+    
+    The request body should contain messages.
+    """
     
     # Verify API key
-    user_info = verify_api_key(x_api_key)
-    if not user_info:
-        from fastapi import HTTPException
+    if api_key not in API_KEYS:
         raise HTTPException(status_code=401, detail="Invalid API key")
     
-    # Parse request body
-    body = await request.json()
-    original_prompt = body.get("messages", [{}])[-1].get("content", "")
-    model = body.get("model", "unknown")
+    user_name = API_KEYS[api_key]
+    start_time = time.time()
     
-    # For now, echo back (we'll add OpenAI later)
-    response_data = {
-        "id": request_id,
+    # Get the user's message
+    user_message = request.messages[-1].content if request.messages else ""
+    
+    # Echo response
+    response_text = f"[Echo] {user_name} said: {user_message}"
+    
+    response = {
+        "id": str(uuid.uuid4()),
         "object": "chat.completion",
         "created": int(time.time()),
-        "model": model,
+        "model": request.model,
         "choices": [{
             "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": f"Echo from security gateway: {original_prompt[:200]}"
-            },
+            "message": {"role": "assistant", "content": response_text},
             "finish_reason": "stop"
         }],
         "usage": {
-            "prompt_tokens": len(original_prompt) // 4,
-            "completion_tokens": 50,
-            "total_tokens": (len(original_prompt) // 4) + 50
+            "prompt_tokens": len(user_message) // 4,
+            "completion_tokens": len(response_text) // 4,
+            "total_tokens": (len(user_message) + len(response_text)) // 4
         }
     }
     
-    # Calculate duration
-    duration_ms = int((time.time() - start_time) * 1000)
+    # Log to database
+    background_tasks.add_task(
+        db_service.log_request,
+        {
+            "user_id": user_name,
+            "department": "unknown",
+            "provider": "echo",
+            "model": request.model,
+            "temperature": request.temperature,
+            "max_tokens": request.max_tokens,
+            "original_prompt": user_message,
+            "original_response": response_text,
+            "blocked": False,
+            "client_ip": raw_request.client.host if raw_request.client else None,
+            "user_agent": raw_request.headers.get("user-agent"),
+            "response_time_ms": int((time.time() - start_time) * 1000)
+        }
+    )
     
-    # Log to in-memory storage
-    log_entry = {
-        "request_id": request_id,
-        "timestamp": time.time(),
-        "user_id": user_info["name"],
-        "department": user_info["department"],
-        "model": model,
-        "original_prompt": original_prompt[:500],
-        "response_preview": response_data["choices"][0]["message"]["content"][:200],
-        "duration_ms": duration_ms,
-        "blocked": False,
-        "client_ip": request.client.host if request.client else None
-    }
-    audit_logs.append(log_entry)
-    
-    # Keep only last 1000 logs
-    while len(audit_logs) > 1000:
-        audit_logs.pop(0)
-    
-    return response_data
+    return response
 
-@app.get("/logs")
-async def get_logs(limit: int = 20, x_api_key: str = None):
-    """View audit logs"""
-    user_info = verify_api_key(x_api_key)
-    if not user_info:
-        from fastapi import HTTPException
+# ============================================================
+# LOGS ENDPOINT
+# ============================================================
+
+@app.get("/logs/{api_key}")
+async def get_logs(api_key: str, limit: int = 20):
+    if api_key not in API_KEYS:
         raise HTTPException(status_code=401, detail="Invalid API key")
     
-    # Return last N logs
-    return {
-        "total": len(audit_logs),
-        "logs": audit_logs[-limit:]
-    }
+    logs = await db_service.get_logs(limit=limit)
+    return {"logs": logs}
+
+# ============================================================
+# RUN
+# ============================================================
 
 if __name__ == "__main__":
     import uvicorn
+    
     print("\n" + "="*60)
-    print("🔐 LLM SECURITY GATEWAY - SIMPLIFIED VERSION")
+    print("🔐 LLM SECURITY GATEWAY")
     print("="*60)
-    print("\n✅ This simplified version uses in-memory storage")
-    print("✅ PostgreSQL will be added later")
-    print("\n📋 API Keys for Testing:")
-    for key, info in USERS.items():
-        print(f"   {info['name']} ({info['department']}): {key}")
-    print("\n📍 Endpoints:")
-    print("   POST /v1/chat/completions - Send LLM request")
-    print("   GET  /stats - View statistics")
-    print("   GET  /logs - View audit logs (requires API key)")
-    print("   GET  /docs - Interactive API documentation")
-    print("\n" + "="*60)
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    print("\n📋 API Keys (put in URL path):")
+    print("   http://localhost:8000/v1/chat/completions/admin-key-12345")
+    print("   http://localhost:8000/v1/chat/completions/test-key-67890")
+    print("\n📍 Swagger Docs: http://localhost:8000/docs")
+    print("="*60)
+    
+    uvicorn.run("gateway:app", host="0.0.0.0", port=8000, reload=True)

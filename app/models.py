@@ -1,3 +1,4 @@
+# app/models.py
 from sqlalchemy import Column, Integer, String, DateTime, Text, JSON, Boolean, Float, Index
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
@@ -5,7 +6,7 @@ from datetime import datetime
 Base = declarative_base()
 
 class LLMRequestLog(Base):
-    """Audit log table for GDPR/HIPAA/SOC2 compliance"""
+    """Audit log table for compliance (GDPR/HIPAA/SOC2)"""
     __tablename__ = "llm_requests"
     
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -23,27 +24,22 @@ class LLMRequestLog(Base):
     temperature = Column(Float)
     max_tokens = Column(Integer)
     
-    # Content (with redaction)
+    # Content (original and redacted for compliance)
     original_prompt = Column(Text)
     redacted_prompt = Column(Text)
     original_response = Column(Text)
     redacted_response = Column(Text)
     
-    # PII Detection (Presidio)
+    # Security flags
     pii_detected = Column(Boolean, default=False, index=True)
     pii_types = Column(JSON)
-    pii_count = Column(Integer, default=0)
-    
-    # Threat Detection (Rebuff)
     prompt_injection_detected = Column(Boolean, default=False, index=True)
-    injection_confidence = Column(Float, default=0.0)
-    injection_attack_type = Column(String(100))
     
     # Actions
     blocked = Column(Boolean, default=False, index=True)
     block_reason = Column(String(500))
     
-    # Metadata
+    # Metadata for audit
     client_ip = Column(String(45))
     user_agent = Column(String(500))
     
@@ -51,21 +47,4 @@ class LLMRequestLog(Base):
     __table_args__ = (
         Index('ix_timestamp_user', 'timestamp', 'user_id'),
         Index('ix_blocked_timestamp', 'blocked', 'timestamp'),
-        Index('ix_pii_detected', 'pii_detected', 'timestamp'),
     )
-
-
-class SecurityAlert(Base):
-    """Security alerts table"""
-    __tablename__ = "security_alerts"
-    
-    id = Column(Integer, primary_key=True)
-    alert_id = Column(String(255), unique=True, nullable=False)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
-    severity = Column(String(20), index=True)  # low, medium, high, critical
-    alert_type = Column(String(100), index=True)
-    user_id = Column(String(255), index=True)
-    request_id = Column(String(255))
-    description = Column(Text)
-    details = Column(JSON)
-    resolved = Column(Boolean, default=False)
