@@ -1,49 +1,53 @@
-# Enterprise LLM & GenAI Security Gateway
+# 🔐 Enterprise LLM & GenAI Security Gateway
 
 **Production-grade security proxy for Large Language Models (LLMs)**
 
-A robust API gateway that protects enterprise applications from PII leakage, prompt injections, and harmful content when interacting with LLMs like Groq, OpenAI, etc.
+A robust API gateway that protects enterprise applications from PII leakage, prompt injections, and harmful content when interacting with LLMs like OpenAI, Anthropic, and others.
 
 ---
 
-## ✅ Project Progress
+## 📊 Project Progress
 
-| Week | Status          | Key Deliverables |
-|------|-----------------|------------------|
-| 1    | ✅ Completed    | FastAPI Proxy, Rate Limiting, Basic Architecture |
-| 2    | ✅ Completed    | Microsoft Presidio + Regex PII Redaction, Deanonymization, Audit Logging |
-| 3    | ✅ Completed    | Prompt Injection Detection, Content Safety Filter, Risk-based Blocking |
-| 4    | In Progress    | SOC Compliance Dashboard, RBAC, Docker |
-
----
-
-## Features Implemented
-
-- **PII/PHI Redaction** (Name, Email, Phone, Aadhaar, PAN, Credit Card, etc.)
-- **Deanonymization** (Restores original data in final response)
-- **Prompt Injection Defense** (Blocks DAN, "ignore previous instructions", etc.)
-- **Content Safety Filter** (Blocks harmful/toxic responses)
-- **Professional SOC Dashboard** (`/dashboard`)
-- **Comprehensive Audit Logging**
-- **API Key Authentication**
+| Week | Status | Key Deliverables |
+|------|--------|------------------|
+| Week 1 | ✅ Completed | FastAPI Gateway, API Key Authentication, SQLite Database, Audit Logging, Stats Endpoint |
+| Week 2 | 🔄 In Progress | Microsoft Presidio PII Redaction |
+| Week 3 | 📋 Planned | Prompt Injection Detection with Rebuff |
+| Week 4 | 📋 Planned | SOC Dashboard, RBAC, Kubernetes Deployment |
 
 ---
 
-## Tech Stack
+## ✨ Features
 
-- **Framework**: FastAPI + Uvicorn
-- **LLM Backend**: Groq (llama-3.1-8b-instant)
-- **PII Detection**: Presidio + Regex
-- **Security**: Custom Prompt Injection + Content Safety Engine
-- **Logging**: Structured JSONL with Dashboard
+- **FastAPI Gateway** - High-performance async API gateway
+- **API Key Authentication** - Multiple keys with role-based access
+- **Audit Logging** - Persistent SQLite database storage
+- **Request/Response Tracking** - Full logging with timestamps
+- **Stats Endpoint** - Real-time gateway statistics
+- **Logs Endpoint** - Searchable audit trail
+- **Swagger/OpenAPI Docs** - Interactive API documentation at `/docs`
 
 ---
 
-## How to Run
+## 🛠️ Tech Stack
 
-```powershell
-# 1. Activate environment
+| Component | Technology |
+|-----------|------------|
+| Framework | FastAPI + Uvicorn |
+| Database | SQLite |
+| ORM | SQLAlchemy |
+| Authentication | API Keys |
+| Language | Python 3.11+ |
+
+---
+
+## 🚀 Quick Start
+
+```bash
+# Clone and setup
+git clone https://github.com/YOUR_USERNAME/llm-security-gateway.git
+cd llm-security-gateway
+python -m venv venv
 venv\Scripts\activate
-
-# 2. Start server
-uvicorn app.main:app --reload --port 8000
+pip install -r requirements.txt
+python gateway.py
